@@ -1,0 +1,9 @@
+Overview: https://example.com/docs/overview.md
+Quickstart: https://example.com/docs/quickstart.md
+Models:
+  url: https://example.com/docs/models.md
+  Alpha:
+    url: https://example.com/docs/models-alpha.md
+    Alpha One: https://example.com/docs/model-alpha-one.md
+    Alpha Two: https://example.com/docs/model-alpha-two.md
+  Beta: https://example.com/docs/models-beta.md
