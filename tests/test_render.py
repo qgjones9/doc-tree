@@ -35,7 +35,17 @@ def test_render_parent_lists_children() -> None:
     assert "- [Alpha](alpha/index.md)" in text
 
 
-def test_render_section() -> None:
+def test_render_local_page_without_url() -> None:
+    node = DocumentNode(
+        title="A note I wrote",
+        url=None,
+        directory="a-note-i-wrote",
+        local=True,
+    )
+    text = PageRenderer().render(node)
+    assert text == (
+        "---\nlocal: true\n---\n# A note I wrote\n\n"
+    )
     child = DocumentNode(
         title="Overview",
         url="https://example.com/overview.md",

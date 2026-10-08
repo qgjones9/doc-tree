@@ -17,7 +17,14 @@ class PageRenderer:
         Returns:
             Markdown text ending with a blank line.
         """
-        parts = [f"# [{node.title}]({node.url})\n\n"]
+        parts: list[str] = []
+        if node.local and not node.url:
+            parts.append("---\nlocal: true\n---\n")
+            parts.append(f"# {node.title}\n\n")
+        else:
+            if not node.url:
+                raise ValueError(f"Page is missing a URL: {node.title}")
+            parts.append(f"# [{node.title}]({node.url})\n\n")
         if node.children:
             for child in node.children:
                 href = f"{child.directory}/index.md"

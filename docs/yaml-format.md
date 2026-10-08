@@ -11,18 +11,22 @@ Overview: https://example.com/docs/overview.md
 Quickstart: https://example.com/docs/quickstart.md
 ```
 
-The directory name comes from the URL filename with `.md` or `.html`
-removed:
+The directory name comes from the page title, not the URL. The title
+is lowercased, each run of non-alphanumeric characters becomes one
+hyphen, and hyphens are stripped from the ends:
 
-| URL | Directory |
+| Title | Directory |
 | --- | --- |
-| `https://example.com/docs/overview.md` | `overview` |
-| `.../model-card-amazon-nova-premier.html` | `model-card-amazon-nova-premier` |
+| `Overview` | `overview` |
+| `Models at a glance` | `models-at-a-glance` |
+
+A URL does not need a filename. The folder still comes from the title.
 
 ## Parent page
 
-A mapping value is a parent. It must contain `url`. Every other key is a
-child page in the same shape:
+A mapping value is a parent. It contains `url`, or `local: true` when
+there is no source URL. Every other key is a child page in the same
+shape:
 
 ```yaml
 Models:
@@ -49,19 +53,45 @@ A parent then lists its direct children:
 ```markdown
 # [Models](https://example.com/docs/models.md)
 
-- [Alpha](models-alpha/index.md)
-- [Beta](models-beta/index.md)
+- [Alpha](alpha/index.md)
+- [Beta](beta/index.md)
 ```
+
+## Local page
+
+A page you wrote, with no source URL, sets `local: true`. `local` is
+the first key. `url` is omitted:
+
+```yaml
+A note I wrote:
+  local: true
+Notes:
+  local: true
+  Detail:
+    local: true
+```
+
+`scaffold` writes frontmatter and a plain H1:
+
+```markdown
+---
+local: true
+---
+# A note I wrote
+```
+
+A page may set `local: true` and still include `url`. The heading stays
+linked. The flag means the URL is optional.
 
 ## Rejected input
 
 The command stops before writing when:
 
 - The structure file is missing, empty, or not a mapping
-- A page has no URL
-- A parent mapping omits `url`
-- Two siblings would share the same directory name
-- A URL has no usable filename
+- A page has no URL and `local` is not `true`
+- A parent mapping omits `url` and `local`
+- Two siblings would share the same directory slug
+- A title has no letters or digits to form a slug
 
 ## Complete example
 

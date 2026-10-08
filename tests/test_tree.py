@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from doc_tree.tree import DocumentTree, DocumentTreeError
+from doc_tree.tree import (
+    DocumentTree,
+    DocumentTreeError,
+    slug_from_title,
+)
 
 
 def write_yaml(path: Path, text: str) -> Path:
@@ -14,19 +18,40 @@ def write_yaml(path: Path, text: str) -> Path:
     return path
 
 
-def test_directory_from_url_strips_md_and_html() -> None:
-    assert (
-        DocumentTree.directory_from_url(
-            "https://example.com/a/overview.md"
-        )
-        == "overview"
+def test_slug_from_title() -> None:
+    assert slug_from_title("Models at a glance") == (
+        "models-at-a-glance"
     )
-    assert (
-        DocumentTree.directory_from_url(
-            "https://example.com/a/model.html"
-        )
-        == "model"
+    assert slug_from_title("Command R+") == "command-r"
+
+
+def test_url_without_filename_uses_title(tmp_path: Path) -> None:
+    structure = write_yaml(
+        tmp_path / "guide.yaml",
+        "Overview: https://example.com/docs/\n",
     )
+    tree = DocumentTree.from_yaml(structure)
+    assert tree.roots[0].directory == "overview"
+    assert tree.roots[0].url == "https://example.com/docs/"
+
+
+def test_local_page_omits_url(tmp_path: Path) -> None:
+    structure = write_yaml(
+        tmp_path / "guide.yaml",
+        """
+Notes:
+  local: true
+  Detail:
+    local: true
+""",
+    )
+    tree = DocumentTree.from_yaml(structure)
+    notes = tree.roots[0]
+    assert notes.local is True
+    assert notes.url is None
+    assert notes.directory == "notes"
+    assert notes.children[0].title == "Detail"
+    assert notes.children[0].url is None
 
 
 def test_loads_leaf_and_parent(tmp_path: Path) -> None:
@@ -63,7 +88,8 @@ def test_rejects_sibling_directory_collision(tmp_path: Path) -> None:
         tmp_path / "bad.yaml",
         """
 One: https://example.com/same.md
-Two: https://example.com/path/same.md
+same-page: https://example.com/path/same-page.md
+Same Page: https://example.com/other.md
 """,
     )
     with pytest.raises(DocumentTreeError, match="share directory"):

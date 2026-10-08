@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import yaml
 
@@ -14,20 +14,39 @@ class DocumentTreeError(ValueError):
     """Raised when a YAML document tree fails the contract."""
 
 
+def slug_from_title(title: str) -> str:
+    """Return the directory slug for a page title.
+
+    Lowercase the title, turn each run of non-alphanumeric characters
+    into one hyphen, and strip hyphens from the ends.
+
+    Args:
+        title: Page title from YAML or an H1.
+
+    Returns:
+        Directory name. Empty when the title has no letters or digits.
+    """
+    lowered = title.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", lowered)
+    return slug.strip("-")
+
+
 @dataclass(slots=True)
 class DocumentNode:
     """One documentation page in the tree.
 
     Attributes:
         title: Display title for the page heading and nav.
-        url: Canonical URL for the page.
-        directory: Directory name derived from the URL filename.
+        url: Canonical URL for the page. Absent for a local page.
+        directory: Directory name derived from the title slug.
+        local: True when the page does not require a source URL.
         children: Direct child pages in YAML order.
     """
 
     title: str
-    url: str
+    url: str | None
     directory: str
+    local: bool = False
     children: list[DocumentNode] = field(default_factory=list)
 
     @property
@@ -181,11 +200,11 @@ class DocumentTree:
         *,
         path: str,
     ) -> DocumentNode:
+        directory = cls._directory_for_title(title, path)
         if isinstance(value, str):
             url = value.strip()
             if not url:
                 raise DocumentTreeError(f"Missing URL for {path}")
-            directory = cls.directory_from_url(url)
             return DocumentNode(
                 title=title,
                 url=url,
@@ -195,51 +214,34 @@ class DocumentTree:
             raise DocumentTreeError(
                 f"Page value must be a URL or mapping: {path}"
             )
-        if "url" not in value:
+        local = value.get("local") is True
+        url: str | None = None
+        if "url" in value:
+            url_value = value["url"]
+            if not isinstance(url_value, str) or not url_value.strip():
+                raise DocumentTreeError(f"Invalid url for {path}")
+            url = url_value.strip()
+        elif not local:
             raise DocumentTreeError(f"Missing url for {path}")
-        url_value = value["url"]
-        if not isinstance(url_value, str) or not url_value.strip():
-            raise DocumentTreeError(f"Invalid url for {path}")
-        url = url_value.strip()
-        directory = cls.directory_from_url(url)
         child_mapping = {
             key: child
             for key, child in value.items()
-            if key != "url"
+            if key not in {"url", "local"}
         }
         children = cls._parse_mapping(child_mapping, path=path)
         return DocumentNode(
             title=title,
             url=url,
             directory=directory,
+            local=local,
             children=children,
         )
 
     @staticmethod
-    def directory_from_url(url: str) -> str:
-        """Derive a directory name from a page URL.
-
-        Args:
-            url: Absolute or relative page URL.
-
-        Returns:
-            Filename stem with ``.md`` or ``.html`` removed.
-
-        Raises:
-            DocumentTreeError: The URL has no usable filename.
-        """
-        parsed = urlparse(url)
-        candidate = parsed.path.rstrip("/")
-        if not candidate:
-            raise DocumentTreeError(f"URL has no path: {url}")
-        name = Path(candidate).name
-        if not name:
-            raise DocumentTreeError(f"URL has no filename: {url}")
-        lower = name.lower()
-        if lower.endswith(".md"):
-            return name[:-3]
-        if lower.endswith(".html"):
-            return name[:-5]
-        if lower.endswith(".htm"):
-            return name[:-4]
-        return name
+    def _directory_for_title(title: str, path: str) -> str:
+        directory = slug_from_title(title)
+        if not directory:
+            raise DocumentTreeError(
+                f"Title has no directory slug: {path}"
+            )
+        return directory
