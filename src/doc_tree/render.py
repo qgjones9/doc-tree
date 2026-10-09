@@ -26,6 +26,7 @@ class PageRenderer:
                 raise ValueError(f"Page is missing a URL: {node.title}")
             parts.append(f"# [{node.title}]({node.url})\n\n")
         if node.children:
+            parts.append("## Child pages\n\n")
             for child in node.children:
                 href = f"{child.directory}/index.md"
                 parts.append(f"- [{child.title}]({href})\n")
@@ -48,7 +49,7 @@ class PageRenderer:
         Returns:
             Markdown text ending with a blank line.
         """
-        parts = [f"# [{title}]({url})\n\n"]
+        parts = [f"# [{title}]({url})\n\n", "## Child pages\n\n"]
         for child in children:
             href = f"{child.directory}/index.md"
             parts.append(f"- [{child.title}]({href})\n")

@@ -32,7 +32,9 @@ def test_render_parent_lists_children() -> None:
     )
     text = PageRenderer().render(parent)
     assert "# [Models](https://example.com/models.md)" in text
+    assert "## Child pages" in text
     assert "- [Alpha](alpha/index.md)" in text
+    assert text.index("## Child pages") < text.index("- [Alpha]")
 
 
 def test_render_local_page_without_url() -> None:
@@ -59,4 +61,5 @@ def test_render_local_page_without_url() -> None:
     assert text.startswith(
         "# [Example Guide](https://example.com/docs/)"
     )
+    assert "## Child pages" in text
     assert "- [Overview](overview/index.md)" in text

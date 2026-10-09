@@ -42,7 +42,7 @@ Remove `--dry-run` to write the directories. The example YAML lives at
 | Guide | Contents |
 | --- | --- |
 | [Install](docs/install.md) | pipx, user install, upgrade, uninstall |
-| [Usage](docs/usage.md) | Flags, dry-run, force, progress, MkDocs nav |
+| [Usage](docs/usage.md) | Scaffold, validate, plan, apply, and flags |
 | [YAML format](docs/yaml-format.md) | Title, URL, parent, and child rules |
 
 ## Development

@@ -48,10 +48,12 @@ Each `index.md` starts with a linked heading:
 # [Overview](https://example.com/docs/overview.md)
 ```
 
-A parent then lists its direct children:
+A parent then lists its direct children under `## Child pages`:
 
 ```markdown
 # [Models](https://example.com/docs/models.md)
+
+## Child pages
 
 - [Alpha](alpha/index.md)
 - [Beta](beta/index.md)

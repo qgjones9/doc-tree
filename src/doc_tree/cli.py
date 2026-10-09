@@ -10,11 +10,19 @@ from typing import Any
 import yaml
 
 from doc_tree import __version__
-from doc_tree.apply import ApplyError, apply_plan, load_plan, plan_file
+from doc_tree.apply import (
+    MECHANICAL_OPS,
+    ApplyError,
+    apply_plan,
+    load_plan,
+    plan_file,
+)
 from doc_tree.plan import (
     build_plan,
+    build_validate,
     default_structure_path,
     dump_plan,
+    dump_validate,
     render_structure,
 )
 from doc_tree.scaffold import ScaffoldCommand, ScaffoldOptions
@@ -29,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="doc-tree",
         description=(
-            "Scaffold, plan, and apply a title-and-URL "
+            "Scaffold, validate, plan, and apply a title-and-URL "
             "documentation tree."
         ),
     )
@@ -97,15 +105,44 @@ def build_parser() -> argparse.ArgumentParser:
             "generated pages. Required with --nav."
         ),
     )
+    validate = subparsers.add_parser(
+        "validate",
+        help="Report whether a documentation directory matches.",
+    )
+    validate.add_argument(
+        "directory",
+        type=Path,
+        help="Documentation directory to read.",
+    )
     _add_directory_command(
         subparsers,
         "plan",
         "Write a plan that normalizes a documentation directory.",
     )
-    _add_directory_command(
+    apply = _add_directory_command(
         subparsers,
         "apply",
         "Perform the ready actions in a plan file.",
+    )
+    apply.add_argument(
+        "--op",
+        action="append",
+        dest="ops",
+        metavar="OP",
+        choices=sorted(MECHANICAL_OPS),
+        help=(
+            "Ready op to perform. Repeatable. Defaults to "
+            "rename_directory, add_child_link, and "
+            "remove_child_link."
+        ),
+    )
+    apply.add_argument(
+        "--skip",
+        action="append",
+        type=int,
+        dest="skip",
+        metavar="ID",
+        help="Ready action id to leave unapplied. Repeatable.",
     )
     return parser
 
@@ -114,13 +151,16 @@ def _add_directory_command(
     subparsers: Any,
     name: str,
     help_text: str,
-) -> None:
+) -> Any:
     """Add a plan or apply subcommand.
 
     Args:
         subparsers: Parent subparser action.
         name: Subcommand name.
         help_text: One-line help.
+
+    Returns:
+        The created subparser.
     """
     command = subparsers.add_parser(name, help=help_text)
     command.add_argument(
@@ -136,6 +176,7 @@ def _add_directory_command(
             "<directory>/<dirname>.plan.yaml."
         ),
     )
+    return command
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -164,12 +205,37 @@ def main(argv: list[str] | None = None) -> int:
             docs_prefix=args.docs_prefix,
         )
         return ScaffoldCommand(options).run()
+    if args.command == "validate":
+        return _run_validate(args.directory)
     if args.command == "plan":
         return _run_plan(args.directory, args.plan)
     if args.command == "apply":
-        return _run_apply(args.directory, args.plan)
+        return _run_apply(
+            args.directory,
+            args.plan,
+            ops=set(args.ops) if args.ops else None,
+            skip=set(args.skip) if args.skip else None,
+        )
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def _run_validate(directory: Path) -> int:
+    """Print a validate report without writing files.
+
+    Args:
+        directory: Documentation directory.
+
+    Returns:
+        ``0`` when the tree matches, ``1`` when actions remain
+        or the directory cannot be read.
+    """
+    if not directory.is_dir():
+        print(f"error: not a directory: {directory}", file=sys.stderr)
+        return 1
+    payload = build_validate(directory)
+    print(dump_validate(payload), end="")
+    return 0 if payload["ok"] else 1
 
 
 def _run_plan(directory: Path, plan: Path | None) -> int:
@@ -198,12 +264,20 @@ def _run_plan(directory: Path, plan: Path | None) -> int:
     return 0
 
 
-def _run_apply(directory: Path, plan: Path | None) -> int:
+def _run_apply(
+    directory: Path,
+    plan: Path | None,
+    *,
+    ops: set[str] | None,
+    skip: set[int] | None,
+) -> int:
     """Apply ready actions from a plan file.
 
     Args:
         directory: Documentation directory.
         plan: Optional plan path override.
+        ops: Ops to perform, or None for the default set.
+        skip: Ready action ids to leave unapplied.
 
     Returns:
         ``0`` on success, ``1`` when the plan cannot be applied.
@@ -213,10 +287,17 @@ def _run_apply(directory: Path, plan: Path | None) -> int:
         return 1
     try:
         payload = load_plan(plan_file(directory, plan))
-        apply_plan(directory, payload)
+        result = apply_plan(
+            directory,
+            payload,
+            ops=ops,
+            skip=skip,
+        )
     except (ApplyError, OSError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    print(f"applied: {result['applied']}")
+    print(f"left: {result['left']}")
     return 0
 
 

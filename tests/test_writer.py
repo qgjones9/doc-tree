@@ -54,6 +54,7 @@ def test_write_creates_pages(tmp_path: Path) -> None:
     models = (output / "models" / "index.md").read_text(
         encoding="utf-8"
     )
+    assert "## Child pages" in models
     assert "- [Alpha](alpha/index.md)" in models
 
 

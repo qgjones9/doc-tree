@@ -14,6 +14,14 @@ from doc_tree.plan import default_plan_path
 _LINK = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _BULLET = re.compile(r"^\s*[-*]\s+\[[^\]]+\]\([^)]+\)\s*$")
 
+MECHANICAL_OPS = frozenset(
+    {
+        "rename_directory",
+        "add_child_link",
+        "remove_child_link",
+    }
+)
+
 
 class ApplyError(RuntimeError):
     """Raised when a ready action cannot be performed."""
@@ -39,37 +47,83 @@ def load_plan(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def apply_plan(directory: Path, payload: dict[str, Any]) -> None:
-    """Perform ready actions in the order they are written.
+def apply_plan(
+    directory: Path,
+    payload: dict[str, Any],
+    *,
+    ops: set[str] | None = None,
+    skip: set[int] | None = None,
+) -> dict[str, int]:
+    """Perform selected ready actions in the order they are written.
 
     Args:
         directory: Documentation directory the plan describes.
         payload: Parsed plan mapping.
+        ops: Ops to perform. Defaults to the mechanical set.
+        skip: Ready action ids to leave unapplied.
+
+    Returns:
+        Mapping with ``applied`` and ``left`` counts. ``left`` is
+        the number of ready actions that were not run.
 
     Raises:
-        ApplyError: An action cannot be performed.
+        ApplyError: An action cannot be performed, or a filter is
+            invalid.
     """
+    selected = MECHANICAL_OPS if ops is None else frozenset(ops)
+    unknown = selected - MECHANICAL_OPS
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ApplyError(f"Unsupported apply op: {names}")
+    skip_ids = set(skip or ())
     root = directory.resolve()
     moves: list[tuple[str, str]] = []
     actions = payload.get("actions") or []
     if not isinstance(actions, list):
         raise ApplyError("Plan actions must be a list")
+    by_id = _ready_by_id(actions)
+    for action_id in sorted(skip_ids):
+        if action_id not in by_id:
+            raise ApplyError(
+                f"Skip id is missing or not ready: {action_id}"
+            )
+    applied = 0
+    ready_count = 0
     for action in actions:
         if not isinstance(action, dict):
             raise ApplyError("Plan action must be a mapping")
         if action.get("status") != "ready":
             continue
+        ready_count += 1
+        action_id = action.get("id")
+        if action_id in skip_ids:
+            continue
         op = action.get("op")
+        if op not in selected:
+            continue
         if op == "rename_directory":
             _rename(root, action, moves)
         elif op == "add_child_link":
             _add_child_link(root, action, moves)
         elif op == "remove_child_link":
             _remove_child_link(root, action, moves)
-        elif op == "set_h1_link":
-            _set_h1_link(root, action, moves)
         else:
             raise ApplyError(f"Unknown ready action: {op}")
+        applied += 1
+    return {"applied": applied, "left": ready_count - applied}
+
+
+def _ready_by_id(actions: list[Any]) -> dict[int, dict[str, Any]]:
+    found: dict[int, dict[str, Any]] = {}
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        if action.get("status") != "ready":
+            continue
+        action_id = action.get("id")
+        if isinstance(action_id, int):
+            found[action_id] = action
+    return found
 
 
 def _rename(
@@ -139,10 +193,12 @@ def _rewrite_link(
 
 def _rewrite_mkdocs(path: Path, old_abs: Path, new_abs: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    old_docs = _docs_rel(old_abs)
-    new_docs = _docs_rel(new_abs)
-    if old_docs and new_docs:
-        text = _replace_path(text, old_docs, new_docs)
+    for old, new in zip(
+        _docs_nav_paths(old_abs),
+        _docs_nav_paths(new_abs),
+        strict=True,
+    ):
+        text = _replace_path(text, old, new)
     path.write_text(text, encoding="utf-8")
 
 
@@ -153,11 +209,18 @@ def _replace_path(text: str, old: str, new: str) -> str:
     return pattern.sub(new, text)
 
 
-def _docs_rel(path: Path) -> str | None:
+def _docs_nav_paths(path: Path) -> list[str]:
+    """Return MkDocs nav path forms for a page under docs/.
+
+    Nav entries are usually relative to ``docs_dir`` (no ``docs/``
+    prefix). Also include the ``docs/...`` form for configs that
+    store that.
+    """
     for parent in [path, *path.parents]:
         if parent.name == "docs":
-            return Path("docs", path.relative_to(parent)).as_posix()
-    return None
+            rel = path.relative_to(parent).as_posix()
+            return [rel, f"docs/{rel}"]
+    return []
 
 
 def _add_child_link(
@@ -173,24 +236,55 @@ def _add_child_link(
     path.write_text(_insert_child_link(text, line), encoding="utf-8")
 
 
+_CHILD_PAGES_HEADING = "## Child pages"
+
+
 def _insert_child_link(text: str, line: str) -> str:
     lines = text.splitlines(keepends=True)
-    last_bullet = None
-    for index, existing in enumerate(lines):
-        if _BULLET.match(existing.rstrip("\n")):
-            last_bullet = index
+    heading = _find_child_pages_heading(lines)
+    if heading is None:
+        return _append_child_pages_section(text, line)
+    last_bullet = _last_bullet_in_section(lines, heading)
     if last_bullet is not None:
         lines.insert(last_bullet + 1, line)
         return "".join(lines)
+    insert_at = heading + 1
+    block = ["\n", line]
+    if insert_at < len(lines) and lines[insert_at].strip() == "":
+        block = [line]
+        insert_at += 1
+    lines[insert_at:insert_at] = block
+    return "".join(lines)
+
+
+def _find_child_pages_heading(lines: list[str]) -> int | None:
     for index, existing in enumerate(lines):
-        stripped = existing.lstrip()
-        if stripped.startswith("# ") or stripped.startswith("#\t"):
-            block = ["\n", line]
-            lines[index + 1 : index + 1] = block
-            return "".join(lines)
-    if text and not text.endswith("\n"):
-        text += "\n"
-    return text + "\n" + line
+        if existing.rstrip("\n") == _CHILD_PAGES_HEADING:
+            return index
+    return None
+
+
+def _last_bullet_in_section(
+    lines: list[str],
+    heading: int,
+) -> int | None:
+    last_bullet = None
+    for index in range(heading + 1, len(lines)):
+        stripped = lines[index].lstrip()
+        if stripped.startswith("## ") or stripped.startswith("##\t"):
+            break
+        if _BULLET.match(lines[index].rstrip("\n")):
+            last_bullet = index
+    return last_bullet
+
+
+def _append_child_pages_section(text: str, line: str) -> str:
+    body = text
+    if body and not body.endswith("\n"):
+        body += "\n"
+    if body and not body.endswith("\n\n"):
+        body += "\n"
+    return f"{body}{_CHILD_PAGES_HEADING}\n\n{line}"
 
 
 def _remove_child_link(
@@ -206,26 +300,6 @@ def _remove_child_link(
             continue
         kept.append(line)
     path.write_text("".join(kept), encoding="utf-8")
-
-
-def _set_h1_link(
-    root: Path,
-    action: dict[str, Any],
-    moves: list[tuple[str, str]],
-) -> None:
-    path = _at(root, _map_rel(str(action["index"]), moves))
-    title = str(action["title"])
-    url = str(action["url"])
-    pattern = re.compile(
-        r"^#\s+" + re.escape(title) + r"\s*$",
-        re.MULTILINE,
-    )
-    replacement = f"# [{title}]({url})"
-    text = path.read_text(encoding="utf-8")
-    updated, count = pattern.subn(replacement, text, count=1)
-    if count != 1:
-        raise ApplyError(f"H1 not found in {action['index']}")
-    path.write_text(updated, encoding="utf-8")
 
 
 def _split_suffix(href: str) -> tuple[str, str]:

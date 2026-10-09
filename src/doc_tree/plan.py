@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,21 @@ def default_structure_path(directory: Path) -> Path:
     return directory / f"{directory.name}.yaml"
 
 
+def inspect_tree(directory: Path) -> list[dict[str, Any]]:
+    """Classify a documentation directory without scanning rename links.
+
+    Args:
+        directory: Existing documentation directory.
+
+    Returns:
+        Ordered actions, ready deepest first, then blocked. Ids are
+        not assigned.
+    """
+    root = directory.resolve()
+    pages = _collect(root)
+    return _ordered_actions(_actions(root, pages))
+
+
 def build_plan(directory: Path) -> dict[str, Any]:
     """Build the plan payload for a documentation directory.
 
@@ -60,18 +76,39 @@ def build_plan(directory: Path) -> dict[str, Any]:
     """
     root = directory.resolve()
     pages = _collect(root)
-    actions = _actions(root, pages)
-    ready = [item for item in actions if item["status"] == "ready"]
-    blocked = [item for item in actions if item["status"] != "ready"]
-    ready.sort(key=lambda action: (-_depth(action), _action_path(action)))
-    ordered = [*ready, *blocked]
-    numbered: list[dict[str, Any]] = []
-    for number, action in enumerate(ordered, start=1):
-        numbered.append(_with_id(number, action))
+    actions = _ordered_actions(_actions(root, pages))
+    _attach_rename_links(root, actions)
+    numbered = [
+        _with_id(number, action)
+        for number, action in enumerate(actions, start=1)
+    ]
     return {
         "ok": not numbered,
         "directory": directory.name,
         "actions": numbered,
+    }
+
+
+def build_validate(directory: Path) -> dict[str, Any]:
+    """Build the validate report for a documentation directory.
+
+    Args:
+        directory: Existing documentation directory.
+
+    Returns:
+        Mapping with ``ok``, ``directory``, action counts, and
+        blocked rows. Ready actions are counts only.
+    """
+    actions = inspect_tree(directory)
+    counts = Counter(str(action["op"]) for action in actions)
+    blocked = [
+        action for action in actions if action.get("status") != "ready"
+    ]
+    return {
+        "ok": not actions,
+        "directory": directory.name,
+        "actions": dict(sorted(counts.items())),
+        "blocked": blocked,
     }
 
 
@@ -96,6 +133,22 @@ def dump_plan(payload: dict[str, Any]) -> str:
 
     Args:
         payload: Plan mapping from :func:`build_plan`.
+
+    Returns:
+        YAML text.
+    """
+    return yaml.safe_dump(
+        payload,
+        sort_keys=False,
+        allow_unicode=True,
+    )
+
+
+def dump_validate(payload: dict[str, Any]) -> str:
+    """Serialize a validate report.
+
+    Args:
+        payload: Report mapping from :func:`build_validate`.
 
     Returns:
         YAML text.
@@ -151,9 +204,7 @@ def _actions(root: Path, pages: list[_Page]) -> list[dict[str, Any]]:
                 }
             )
             continue
-        actions.extend(
-            _page_actions(root, page, by_rel, colliding)
-        )
+        actions.extend(_page_actions(page, by_rel, colliding))
     for path, group in collisions.items():
         actions.append(
             {
@@ -166,8 +217,64 @@ def _actions(root: Path, pages: list[_Page]) -> list[dict[str, Any]]:
     return actions
 
 
-def _page_actions(
+def _ordered_actions(
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ready = [item for item in actions if item["status"] == "ready"]
+    blocked = [item for item in actions if item["status"] != "ready"]
+    ready.sort(key=lambda action: (-_depth(action), _action_path(action)))
+    return [*ready, *blocked]
+
+
+def _attach_rename_links(
     root: Path,
+    actions: list[dict[str, Any]],
+) -> None:
+    renames = [
+        action
+        for action in actions
+        if action.get("op") == "rename_directory"
+    ]
+    if not renames:
+        return
+    by_dir: dict[Path, dict[str, Any]] = {}
+    resolve_to_dir: dict[Path, Path] = {}
+    found: dict[Path, set[str]] = {}
+    for action in renames:
+        target = (root / str(action["from"])).resolve()
+        by_dir[target] = action
+        resolve_to_dir[target] = target
+        resolve_to_dir[target / "index.md"] = target
+        found[target] = set()
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            name for name in dirnames if not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            path = Path(directory) / name
+            text = path.read_text(encoding="utf-8")
+            rel = path.relative_to(root).as_posix()
+            for matched in _markdown_link_targets(path, text):
+                target = resolve_to_dir.get(matched)
+                if target is not None:
+                    found[target].add(rel)
+    mkdocs = _find_mkdocs(root)
+    mkdocs_text = None
+    mkdocs_rel = None
+    if mkdocs is not None:
+        mkdocs_text = mkdocs.read_text(encoding="utf-8")
+        mkdocs_rel = Path(os.path.relpath(mkdocs, root)).as_posix()
+    for target, action in by_dir.items():
+        links = found[target]
+        if mkdocs_text is not None and mkdocs_rel is not None:
+            if _mkdocs_mentions_text(mkdocs_text, root, target):
+                links.add(mkdocs_rel)
+        action["links"] = sorted(links)
+
+
+def _page_actions(
     page: _Page,
     by_rel: dict[str, _Page],
     colliding: set[str],
@@ -178,19 +285,19 @@ def _page_actions(
     if not parsed.title or not slug_from_title(parsed.title):
         actions.append(_need_url(page))
         return actions
+    if _needs_set_h1_link(parsed):
+        actions.append(
+            {
+                "status": "blocked",
+                "op": "set_h1_link",
+                "index": page.index_rel,
+                "title": parsed.title,
+                "url": parsed.embedded_url,
+            }
+        )
+        return actions
     if parsed.plain_h1 and not parsed.local:
-        if parsed.embedded_url:
-            actions.append(
-                {
-                    "status": "ready",
-                    "op": "set_h1_link",
-                    "index": page.index_rel,
-                    "title": parsed.title,
-                    "url": parsed.embedded_url,
-                }
-            )
-        else:
-            actions.append(_need_url(page))
+        actions.append(_need_url(page))
     slug = slug_from_title(parsed.title)
     if (
         page.rel_dir
@@ -204,12 +311,16 @@ def _page_actions(
                 "from": page.rel_dir,
                 "to": slug,
                 "h1": parsed.title,
-                "links": _links_to(root, page.directory),
             }
         )
-    if page.parsed is not None:
-        actions.extend(_child_link_actions(page, by_rel, colliding))
+    actions.extend(_child_link_actions(page, by_rel, colliding))
     return actions
+
+
+def _needs_set_h1_link(parsed: ParsedPage) -> bool:
+    return bool(
+        parsed.plain_h1 and not parsed.local and parsed.embedded_url
+    )
 
 
 def _child_link_actions(
@@ -234,6 +345,7 @@ def _child_link_actions(
             or child.parsed is None
             or not child.parsed.title
             or rel in colliding
+            or _needs_set_h1_link(child.parsed)
         ):
             continue
         slug = slug_from_title(child.parsed.title)
@@ -289,27 +401,8 @@ def _collisions(
     return found
 
 
-def _links_to(root: Path, target: Path) -> list[str]:
-    links: list[str] = []
-    target_abs = target.resolve()
-    for directory, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            name for name in dirnames if not name.startswith(".")
-        )
-        for name in sorted(filenames):
-            if not name.endswith(".md"):
-                continue
-            path = Path(directory) / name
-            text = path.read_text(encoding="utf-8")
-            if _markdown_links_to(path, text, target_abs):
-                links.append(path.relative_to(root).as_posix())
-    mkdocs = _find_mkdocs(root)
-    if mkdocs is not None and _mkdocs_mentions(mkdocs, root, target):
-        links.append(Path(os.path.relpath(mkdocs, root)).as_posix())
-    return links
-
-
-def _markdown_links_to(path: Path, text: str, target: Path) -> bool:
+def _markdown_link_targets(path: Path, text: str) -> set[Path]:
+    targets: set[Path] = set()
     for match in _LINK.finditer(text):
         href = match.group(1).strip()
         if "://" in href:
@@ -317,17 +410,18 @@ def _markdown_links_to(path: Path, text: str, target: Path) -> bool:
         raw = href.split("#", 1)[0].split("?", 1)[0].strip()
         if not raw:
             continue
-        resolved = Path(os.path.normpath(path.parent / raw))
-        if resolved == target or resolved == target / "index.md":
-            return True
-    return False
+        targets.add(Path(os.path.normpath(path.parent / raw)))
+    return targets
 
 
-def _mkdocs_mentions(mkdocs: Path, root: Path, target: Path) -> bool:
-    text = mkdocs.read_text(encoding="utf-8")
+def _mkdocs_mentions_text(
+    text: str,
+    root: Path,
+    target: Path,
+) -> bool:
     rel = target.resolve().relative_to(root).as_posix()
-    docs_rel = _docs_rel(target.resolve())
-    for candidate in (rel, docs_rel):
+    candidates = [rel, *_docs_nav_paths(target.resolve())]
+    for candidate in candidates:
         if candidate and _contains_path(text, candidate):
             return True
     return False
@@ -354,14 +448,18 @@ def _find_mkdocs(root: Path) -> Path | None:
     return None
 
 
-def _docs_rel(path: Path) -> str | None:
+def _docs_nav_paths(path: Path) -> list[str]:
+    """Return MkDocs nav path forms for a page under docs/.
+
+    Nav entries are usually relative to ``docs_dir`` (no ``docs/``
+    prefix). Also include the ``docs/...`` form for configs that
+    store that.
+    """
     for parent in [path, *path.parents]:
         if parent.name == "docs":
-            return Path(
-                "docs",
-                path.relative_to(parent),
-            ).as_posix()
-    return None
+            rel = path.relative_to(parent).as_posix()
+            return [rel, f"docs/{rel}"]
+    return []
 
 
 def _path_base(root: Path) -> Path:
